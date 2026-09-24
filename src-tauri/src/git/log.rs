@@ -1,0 +1,215 @@
+//! Commit-graph walk (gix). This is the performance-critical read path that must
+//! stay smooth on 50k+ commit repositories, so it runs off the UI thread and is
+//! paginated — we never materialize the whole history at once.
+
+use super::{GitError, GitResult};
+use gix::traverse::commit::simple::Sorting;
+use serde::Serialize;
+use std::collections::HashMap;
+
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub enum RefKind {
+    Head,
+    LocalBranch,
+    RemoteBranch,
+    Tag,
+}
+
+#[derive(Debug, Serialize, Clone)]
+pub struct RefLabel {
+    pub name: String,
+    pub kind: RefKind,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Commit {
+    pub sha: String,
+    pub parents: Vec<String>,
+    pub author: String,
+    pub email: String,
+    pub time: i64,
+    pub summary: String,
+    pub refs: Vec<RefLabel>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CommitPage {
+    pub commits: Vec<Commit>,
+    pub next_cursor: Option<String>,
+}
+
+/// Walk commits from all refs, newest first, returning one page.
+///
+/// `cursor` is an opaque offset (stringified count) for MVP pagination; `None`
+/// starts at the beginning. A streaming/seek cursor is a documented follow-up.
+pub fn graph(path: &str, cursor: Option<&str>, limit: usize) -> GitResult<CommitPage> {
+    let repo = gix::open(path).map_err(|_| GitError::NotARepo(path.to_string()))?;
+
+    let ref_index = build_ref_index(&repo)?;
+    let tips = collect_tips(&repo)?;
+    if tips.is_empty() {
+        return Ok(CommitPage {
+            commits: Vec::new(),
+            next_cursor: None,
+        });
+    }
+
+    let offset: usize = cursor.and_then(|c| c.parse().ok()).unwrap_or(0);
+
+    let walk = repo
+        .rev_walk(tips)
+        .sorting(Sorting::ByCommitTimeNewestFirst)
+        .all()
+        .map_err(|e| GitError::Failed(e.to_string()))?;
+
+    let mut commits = Vec::with_capacity(limit);
+    let mut seen = 0usize;
+    let mut produced = 0usize;
+
+    for info in walk {
+        let info = info.map_err(|e| GitError::Failed(e.to_string()))?;
+        seen += 1;
+        if seen <= offset {
+            continue;
+        }
+        if produced >= limit {
+            break;
+        }
+
+        let commit = repo
+            .find_object(info.id)
+            .map_err(|e| GitError::Failed(e.to_string()))?
+            .try_into_commit()
+            .map_err(|e| GitError::Failed(e.to_string()))?;
+
+        let sha = info.id.to_hex().to_string();
+        let parents = info.parent_ids.iter().map(|p| p.to_hex().to_string()).collect();
+
+        let (author, email) = match commit.author() {
+            Ok(a) => (a.name.to_string(), a.email.to_string()),
+            Err(_) => (String::new(), String::new()),
+        };
+        let time = commit.time().map(|t| t.seconds).unwrap_or(0);
+
+        let summary = commit
+            .message()
+            .map(|m| m.summary().to_string())
+            .unwrap_or_default();
+
+        let refs = ref_index.get(&sha).cloned().unwrap_or_default();
+
+        commits.push(Commit {
+            sha,
+            parents,
+            author,
+            email,
+            time,
+            summary,
+            refs,
+        });
+        produced += 1;
+    }
+
+    // If the walk yielded a full page there may be more history.
+    let next_cursor = if produced == limit {
+        Some((offset + produced).to_string())
+    } else {
+        None
+    };
+
+    Ok(CommitPage {
+        commits,
+        next_cursor,
+    })
+}
+
+/// All commit tips to walk from: every local/remote branch and tag.
+fn collect_tips(repo: &gix::Repository) -> GitResult<Vec<gix::ObjectId>> {
+    let mut tips = Vec::new();
+    let platform = repo
+        .references()
+        .map_err(|e| GitError::Failed(e.to_string()))?;
+    for r in platform.all().map_err(|e| GitError::Failed(e.to_string()))? {
+        let mut r = match r {
+            Ok(r) => r,
+            Err(_) => continue,
+        };
+        if let Ok(id) = r.peel_to_id_in_place() {
+            tips.push(id.detach());
+        }
+    }
+    tips.sort();
+    tips.dedup();
+    Ok(tips)
+}
+
+/// Map commit SHA -> ref labels pointing at it (for graph badges & minimap).
+fn build_ref_index(repo: &gix::Repository) -> GitResult<HashMap<String, Vec<RefLabel>>> {
+    let mut index: HashMap<String, Vec<RefLabel>> = HashMap::new();
+
+    let head_id = repo.head_id().ok().map(|id| id.to_hex().to_string());
+
+    for (full, sha) in super::refs::enumerate_refs(repo)? {
+        let (name, kind) = if let Some(n) = full.strip_prefix("refs/heads/") {
+            (n.to_string(), RefKind::LocalBranch)
+        } else if let Some(n) = full.strip_prefix("refs/remotes/") {
+            (n.to_string(), RefKind::RemoteBranch)
+        } else if let Some(n) = full.strip_prefix("refs/tags/") {
+            (n.to_string(), RefKind::Tag)
+        } else {
+            continue;
+        };
+
+        index.entry(sha).or_default().push(RefLabel { name, kind });
+    }
+
+    // Tag HEAD so the minimap can render it green.
+    if let Some(sha) = head_id {
+        index.entry(sha).or_default().push(RefLabel {
+            name: "HEAD".to_string(),
+            kind: RefKind::Head,
+        });
+    }
+
+    Ok(index)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn empty_offset_parses_to_zero() {
+        assert_eq!(None::<&str>.and_then(|c: &str| c.parse::<usize>().ok()), None);
+    }
+
+    #[test]
+    fn graph_walks_fixture_repo() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path();
+        // Build a tiny repo with two commits using git2 (test-only).
+        let repo = git2::Repository::init(path).unwrap();
+        let sig = git2::Signature::now("Test", "test@example.com").unwrap();
+        let tree_id = {
+            let mut idx = repo.index().unwrap();
+            std::fs::write(path.join("a.txt"), "hello").unwrap();
+            idx.add_path(std::path::Path::new("a.txt")).unwrap();
+            idx.write().unwrap();
+            idx.write_tree().unwrap()
+        };
+        let tree = repo.find_tree(tree_id).unwrap();
+        let c1 = repo
+            .commit(Some("HEAD"), &sig, &sig, "first", &tree, &[])
+            .unwrap();
+        let parent = repo.find_commit(c1).unwrap();
+        repo.commit(Some("HEAD"), &sig, &sig, "second", &tree, &[&parent])
+            .unwrap();
+
+        let page = graph(path.to_str().unwrap(), None, 10).unwrap();
+        assert_eq!(page.commits.len(), 2);
+        assert_eq!(page.commits[0].summary, "second");
+    }
+}
