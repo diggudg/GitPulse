@@ -1,6 +1,7 @@
 import { create } from "zustand";
 
 export type Theme = "dark" | "light" | "high-contrast";
+export type FileDiffSource = "commit" | "staged" | "worktree";
 
 /** The Home tab is always present; repo tabs are keyed by their path. */
 export const HOME_TAB = "home";
@@ -8,6 +9,7 @@ export const HOME_TAB = "home";
 interface Selection {
   sha: string | null;
   file: string | null;
+  diffSource: FileDiffSource | null;
 }
 
 interface UiState {
@@ -18,25 +20,23 @@ interface UiState {
   selection: Record<string, Selection>;
   /** Bumped on data-changing events (e.g. a new commit) so views reload. */
   refreshKey: number;
-  terminalVisible: boolean;
 
   setTheme: (theme: Theme) => void;
   setActiveTab: (id: string) => void;
   selectCommit: (repoPath: string, sha: string | null) => void;
   selectFile: (repoPath: string, file: string | null) => void;
+  selectWorkingTreeFile: (repoPath: string, file: string, source: "staged" | "worktree") => void;
   clearSelection: (repoPath: string) => void;
   bumpRefresh: () => void;
-  toggleTerminal: () => void;
 }
 
-const EMPTY: Selection = { sha: null, file: null };
+const EMPTY: Selection = { sha: null, file: null, diffSource: null };
 
 export const useUiStore = create<UiState>((set) => ({
   theme: "dark",
   activeTabId: HOME_TAB,
   selection: {},
   refreshKey: 0,
-  terminalVisible: false,
 
   setTheme: (theme) => {
     document.documentElement.setAttribute("data-theme", theme);
@@ -45,13 +45,28 @@ export const useUiStore = create<UiState>((set) => ({
   setActiveTab: (activeTabId) => set({ activeTabId }),
   selectCommit: (repoPath, sha) =>
     set((s) => ({
-      selection: { ...s.selection, [repoPath]: { sha, file: null } },
+      selection: { ...s.selection, [repoPath]: { sha, file: null, diffSource: null } },
     })),
   selectFile: (repoPath, file) =>
     set((s) => ({
       selection: {
         ...s.selection,
-        [repoPath]: { sha: s.selection[repoPath]?.sha ?? null, file },
+        [repoPath]: {
+          sha: s.selection[repoPath]?.sha ?? null,
+          file,
+          diffSource: file ? "commit" : null,
+        },
+      },
+    })),
+  selectWorkingTreeFile: (repoPath, file, diffSource) =>
+    set((s) => ({
+      selection: {
+        ...s.selection,
+        [repoPath]: {
+          sha: s.selection[repoPath]?.sha ?? null,
+          file,
+          diffSource,
+        },
       },
     })),
   clearSelection: (repoPath) =>
@@ -61,7 +76,6 @@ export const useUiStore = create<UiState>((set) => ({
       return { selection: next };
     }),
   bumpRefresh: () => set((s) => ({ refreshKey: s.refreshKey + 1 })),
-  toggleTerminal: () => set((s) => ({ terminalVisible: !s.terminalVisible })),
 }));
 
 /** Selection for a given repo (stable empty default). */

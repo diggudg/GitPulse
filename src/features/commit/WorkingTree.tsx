@@ -16,6 +16,10 @@ export function WorkingTree({ repoPath }: { repoPath: string }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const bumpRefresh = useUiStore((s) => s.bumpRefresh);
+  const selection = useUiStore((s) => s.selection[repoPath]);
+  const selectWorkingTreeFile = useUiStore((s) => s.selectWorkingTreeFile);
+  const selectCommit = useUiStore((s) => s.selectCommit);
+  const selectFile = useUiStore((s) => s.selectFile);
 
   const refresh = useCallback(async () => {
     try {
@@ -25,9 +29,11 @@ export function WorkingTree({ repoPath }: { repoPath: string }) {
     }
   }, [repoPath]);
 
+  const refreshKey = useUiStore((s) => s.refreshKey);
+
   useEffect(() => {
     void refresh();
-  }, [refresh]);
+  }, [refresh, refreshKey]);
 
   async function run(fn: () => Promise<unknown>) {
     setBusy(true);
@@ -44,9 +50,31 @@ export function WorkingTree({ repoPath }: { repoPath: string }) {
 
   async function doCommit() {
     await run(async () => {
-      await commitCmd(repoPath, message);
+      const sha = await commitCmd(repoPath, message);
       setMessage("");
       bumpRefresh(); // new commit -> reload the graph
+      if (selection?.file && selection.diffSource === "staged") {
+        selectCommit(repoPath, sha);
+        selectFile(repoPath, selection.file);
+      }
+    });
+  }
+
+  function stageFile(path: string) {
+    return run(async () => {
+      await stage(repoPath, [path]);
+      if (selection?.file === path && selection.diffSource === "worktree") {
+        selectWorkingTreeFile(repoPath, path, "staged");
+      }
+    });
+  }
+
+  function unstageFile(path: string) {
+    return run(async () => {
+      await unstage(repoPath, [path]);
+      if (selection?.file === path && selection.diffSource === "staged") {
+        selectWorkingTreeFile(repoPath, path, "worktree");
+      }
     });
   }
 
@@ -64,8 +92,10 @@ export function WorkingTree({ repoPath }: { repoPath: string }) {
             <Section
               title={`Staged (${status.staged.length})`}
               files={status.staged.map((f) => ({ path: f.path, status: f.status }))}
+              selectedFile={selection?.diffSource === "staged" ? selection.file : null}
+              onSelect={(p) => selectWorkingTreeFile(repoPath, p, "staged")}
               actionIcon={<Minus size={13} />}
-              onAction={(p) => run(() => unstage(repoPath, [p]))}
+              onAction={unstageFile}
               disabled={busy}
             />
             <Section
@@ -74,8 +104,10 @@ export function WorkingTree({ repoPath }: { repoPath: string }) {
                 ...status.unstaged.map((f) => ({ path: f.path, status: f.status })),
                 ...status.untracked.map((p) => ({ path: p, status: "added" as const })),
               ]}
+              selectedFile={selection?.diffSource === "worktree" ? selection.file : null}
+              onSelect={(p) => selectWorkingTreeFile(repoPath, p, "worktree")}
               actionIcon={<Plus size={13} />}
-              onAction={(p) => run(() => stage(repoPath, [p]))}
+              onAction={stageFile}
               disabled={busy}
             />
           </>
@@ -106,12 +138,16 @@ export function WorkingTree({ repoPath }: { repoPath: string }) {
 function Section({
   title,
   files,
+  selectedFile,
+  onSelect,
   actionIcon,
   onAction,
   disabled,
 }: {
   title: string;
   files: { path: string; status: "added" | "modified" | "deleted" | "renamed" }[];
+  selectedFile: string | null | undefined;
+  onSelect: (path: string) => void;
   actionIcon: React.ReactNode;
   onAction: (path: string) => void;
   disabled: boolean;
@@ -127,9 +163,16 @@ function Section({
             className="group flex items-center gap-2 rounded px-1.5 py-1 hover:bg-bg-inset"
           >
             <FileStatusBadge status={f.status} />
-            <span className="min-w-0 flex-1 truncate" title={f.path}>
+            <button
+              type="button"
+              onClick={() => onSelect(f.path)}
+              className={`min-w-0 flex-1 truncate text-left hover:text-accent ${
+                selectedFile === f.path ? "text-accent" : "text-fg"
+              }`}
+              title={`View diff for ${f.path}`}
+            >
               {f.path}
-            </span>
+            </button>
             <button
               onClick={() => onAction(f.path)}
               disabled={disabled}

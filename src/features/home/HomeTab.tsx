@@ -1,13 +1,15 @@
 import { useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
-import { FolderOpen, FolderSearch, GitFork, Trash2 } from "lucide-react";
+import { Bot, FolderOpen, FolderSearch, GitFork, Trash2 } from "lucide-react";
 import { Launchpad } from "@/features/launchpad/Launchpad";
+import { PrReviewSettings } from "@/features/pr-review/PrReviewSettings";
 import { useWorkspaceStore } from "@/stores/workspaceStore";
 import type { RepoMeta } from "@/lib/ipc";
 
 export function HomeTab() {
   const { repos, addRepo, scanFolder, openTab, removeRepo } = useWorkspaceStore();
   const [scanning, setScanning] = useState(false);
+  const [showPrReviews, setShowPrReviews] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
 
   async function pickRepo() {
@@ -52,6 +54,16 @@ export function HomeTab() {
         >
           <FolderSearch size={15} /> {scanning ? "Scanning…" : "Scan Folder"}
         </button>
+        <button
+          type="button"
+          onClick={() => setShowPrReviews((visible) => !visible)}
+          className={`flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1 text-sm hover:bg-bg-inset ${
+            showPrReviews ? "text-accent" : ""
+          }`}
+          aria-pressed={showPrReviews}
+        >
+          <Bot size={15} /> PR Reviews
+        </button>
         {toast && <span className="text-xs text-fg-muted">{toast}</span>}
         <span className="ml-auto text-xs text-fg-muted">{repos.length} repositories</span>
       </div>
@@ -59,7 +71,11 @@ export function HomeTab() {
       <div className="grid min-h-0 flex-1 grid-rows-[auto_1fr] gap-0 overflow-hidden lg:grid-cols-[20rem_1fr] lg:grid-rows-1">
         <RepoList repos={repos} onOpen={openTab} onRemove={removeRepo} />
         <div className="min-h-0 overflow-hidden border-t border-border lg:border-l lg:border-t-0">
-          <Launchpad />
+          {showPrReviews ? (
+            <PrReviewSettings repos={repos} onClose={() => setShowPrReviews(false)} />
+          ) : (
+            <Launchpad />
+          )}
         </div>
       </div>
     </div>

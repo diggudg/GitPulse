@@ -5,6 +5,8 @@
 use crate::git::asset::{self, DiffPayload};
 use crate::git::discover;
 use crate::git::{diff, log, refs, repo, status, summary, GitError, GitResult, GitService};
+use crate::copilot_sdk::{CopilotModelOption, CopilotSdk};
+use crate::pr_review;
 use rayon::prelude::*;
 
 /// Diffs above this size are streamed to disk and loaded via the asset protocol
@@ -70,6 +72,20 @@ pub async fn file_diff(path: String, sha: String, file: String) -> GitResult<Dif
 }
 
 #[tauri::command]
+pub async fn working_file_diff(
+    path: String,
+    file: String,
+    staged: bool,
+) -> GitResult<DiffPayload> {
+    blocking(move || {
+        let source = if staged { "staged" } else { "working-tree" };
+        let text = GitService::new(path).working_file_patch(&file, staged)?;
+        asset::build_diff_payload(text, source, &file, INLINE_DIFF_LIMIT).map_err(GitError::from)
+    })
+    .await
+}
+
+#[tauri::command]
 pub async fn repo_status(path: String) -> GitResult<status::RepoStatus> {
     blocking(move || GitService::new(path).status()).await
 }
@@ -117,3 +133,103 @@ pub async fn fetch_repo(path: String) -> GitResult<()> {
 pub async fn pull_repo(path: String, rebase: bool) -> GitResult<()> {
     blocking(move || GitService::new(path).pull(rebase)).await
 }
+
+#[tauri::command]
+pub async fn pr_review_environment() -> GitResult<pr_review::ReviewEnvironment> {
+    pr_review::environment().await
+}
+
+#[tauri::command]
+pub async fn list_copilot_models(
+    copilot: tauri::State<'_, CopilotSdk>,
+) -> GitResult<Vec<CopilotModelOption>> {
+    copilot.list_models().await
+}
+
+#[tauri::command]
+pub async fn list_pull_requests(path: String) -> GitResult<Vec<pr_review::PullRequest>> {
+    pr_review::list_pull_requests(&path).await
+}
+
+#[tauri::command]
+pub async fn resolved_review_threads(
+    path: String,
+    repo: String,
+    number: u64,
+) -> GitResult<Vec<String>> {
+    pr_review::resolved_review_threads(&path, &repo, number).await
+}
+
+#[tauri::command]
+pub async fn review_pull_request(
+    copilot: tauri::State<'_, CopilotSdk>,
+    path: String,
+    number: u64,
+    model_id: String,
+) -> GitResult<pr_review::PullRequestReview> {
+    pr_review::review_pull_request(&path, number, &copilot, &model_id).await
+}
+
+#[tauri::command]
+pub async fn get_github_auth_status() -> GitResult<crate::github::AuthStatus> {
+    Ok(crate::github::auth_status())
+}
+
+#[tauri::command]
+pub async fn save_github_token(token: String) -> GitResult<()> {
+    crate::github::set_token(&token).map_err(GitError::Failed)
+}
+
+#[tauri::command]
+pub async fn clear_github_token() -> GitResult<()> {
+    crate::github::delete_token().map_err(GitError::Failed)
+}
+
+#[tauri::command]
+pub async fn copilot_open_login(
+    copilot: tauri::State<'_, CopilotSdk>,
+) -> GitResult<()> {
+    copilot.open_login().await.map_err(GitError::Failed)
+}
+
+#[tauri::command]
+pub async fn github_open_login() -> GitResult<String> {
+    tauri::async_runtime::spawn_blocking(crate::github::open_gh_login)
+        .await
+        .map_err(|e| GitError::Failed(format!("Login task join error: {e}")))?
+        .map_err(GitError::Failed)
+}
+
+#[tauri::command]
+pub fn open_system_terminal(path: String) -> GitResult<()> {
+    let dir = std::path::Path::new(&path);
+    if !dir.is_dir() {
+        return Err(GitError::Failed(format!("Not a directory: {path}")));
+    }
+
+    #[cfg(target_os = "macos")]
+    let mut command = {
+        let mut c = std::process::Command::new("open");
+        c.args(["-a", "Terminal"]).arg(dir);
+        c
+    };
+    #[cfg(target_os = "windows")]
+    let mut command = {
+        let mut c = std::process::Command::new("cmd");
+        c.args(["/C", "start", "powershell.exe", "-NoExit"]).current_dir(dir);
+        c
+    };
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let mut command = {
+        let mut c = std::process::Command::new("x-terminal-emulator");
+        c.current_dir(dir);
+        c
+    };
+
+    command
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| GitError::Failed(format!("Failed to open system terminal: {e}")))
+}
+
+

@@ -3,7 +3,7 @@
 //! paginated — we never materialize the whole history at once.
 
 use super::{GitError, GitResult};
-use gix::traverse::commit::simple::Sorting;
+use gix::traverse::commit::topo::{Builder, Sorting};
 use serde::Serialize;
 use std::collections::HashMap;
 
@@ -41,7 +41,8 @@ pub struct CommitPage {
     pub next_cursor: Option<String>,
 }
 
-/// Walk commits from all refs, newest first, returning one page.
+/// Walk commits from all refs in topological date order, returning one page.
+/// This keeps every parent below its descendants while favoring recent commits.
 ///
 /// `cursor` is an opaque offset (stringified count) for MVP pagination; `None`
 /// starts at the beginning. A streaming/seek cursor is a documented follow-up.
@@ -59,10 +60,9 @@ pub fn graph(path: &str, cursor: Option<&str>, limit: usize) -> GitResult<Commit
 
     let offset: usize = cursor.and_then(|c| c.parse().ok()).unwrap_or(0);
 
-    let walk = repo
-        .rev_walk(tips)
-        .sorting(Sorting::ByCommitTimeNewestFirst)
-        .all()
+    let walk = Builder::from_iters(repo.objects.clone(), tips, None::<Vec<gix::ObjectId>>)
+        .sorting(Sorting::DateOrder)
+        .build()
         .map_err(|e| GitError::Failed(e.to_string()))?;
 
     let mut commits = Vec::with_capacity(limit);
@@ -126,7 +126,7 @@ pub fn graph(path: &str, cursor: Option<&str>, limit: usize) -> GitResult<Commit
     })
 }
 
-/// All commit tips to walk from: every local/remote branch and tag.
+/// Every local/remote branch and tag, plus HEAD when it is detached.
 fn collect_tips(repo: &gix::Repository) -> GitResult<Vec<gix::ObjectId>> {
     let mut tips = Vec::new();
     let platform = repo
@@ -137,9 +137,19 @@ fn collect_tips(repo: &gix::Repository) -> GitResult<Vec<gix::ObjectId>> {
             Ok(r) => r,
             Err(_) => continue,
         };
+        let full_name = r.name().as_bstr().to_string();
+        if !full_name.starts_with("refs/heads/")
+            && !full_name.starts_with("refs/remotes/")
+            && !full_name.starts_with("refs/tags/")
+        {
+            continue;
+        }
         if let Ok(id) = r.peel_to_id_in_place() {
             tips.push(id.detach());
         }
+    }
+    if let Ok(id) = repo.head_id() {
+        tips.push(id.detach());
     }
     tips.sort();
     tips.dedup();
@@ -211,5 +221,105 @@ mod tests {
         let page = graph(path.to_str().unwrap(), None, 10).unwrap();
         assert_eq!(page.commits.len(), 2);
         assert_eq!(page.commits[0].summary, "second");
+    }
+
+    #[test]
+    fn graph_keeps_parent_below_child_when_commit_times_are_skewed() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = git2::Repository::init(dir.path()).unwrap();
+        let parent_signature = git2::Signature::new(
+            "Test",
+            "test@example.com",
+            &git2::Time::new(2_000_000_000, 0),
+        )
+        .unwrap();
+        let child_signature = git2::Signature::new(
+            "Test",
+            "test@example.com",
+            &git2::Time::new(1_000_000_000, 0),
+        )
+        .unwrap();
+        let tree_id = repo.index().unwrap().write_tree().unwrap();
+        let tree = repo.find_tree(tree_id).unwrap();
+        let parent_id = repo
+            .commit(
+                Some("HEAD"),
+                &parent_signature,
+                &parent_signature,
+                "parent with newer clock",
+                &tree,
+                &[],
+            )
+            .unwrap();
+        let parent = repo.find_commit(parent_id).unwrap();
+        repo.commit(
+            Some("HEAD"),
+            &child_signature,
+            &child_signature,
+            "child with older clock",
+            &tree,
+            &[&parent],
+        )
+        .unwrap();
+        drop(parent);
+        drop(tree);
+
+        let page = graph(dir.path().to_str().unwrap(), None, 10).unwrap();
+        assert_eq!(page.commits[0].summary, "child with older clock");
+        assert_eq!(page.commits[1].summary, "parent with newer clock");
+    }
+
+    #[test]
+    fn graph_includes_an_unreferenced_detached_head() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = git2::Repository::init(dir.path()).unwrap();
+        let signature = git2::Signature::now("Test", "test@example.com").unwrap();
+        let tree_id = repo.index().unwrap().write_tree().unwrap();
+        let tree = repo.find_tree(tree_id).unwrap();
+        let detached_id = repo
+            .commit(
+                None,
+                &signature,
+                &signature,
+                "detached head",
+                &tree,
+                &[],
+            )
+            .unwrap();
+        drop(tree);
+        repo.set_head_detached(detached_id).unwrap();
+
+        let page = graph(dir.path().to_str().unwrap(), None, 10).unwrap();
+        assert_eq!(page.commits.len(), 1);
+        assert_eq!(page.commits[0].summary, "detached head");
+        assert!(page.commits[0]
+            .refs
+            .iter()
+            .any(|label| matches!(label.kind, RefKind::Head)));
+    }
+
+    #[test]
+    fn graph_excludes_stash_pseudo_commits_but_lists_stash_separately() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut repo = git2::Repository::init(dir.path()).unwrap();
+        let signature = git2::Signature::now("Test", "test@example.com").unwrap();
+        let mut index = repo.index().unwrap();
+        std::fs::write(dir.path().join("file.txt"), "base\n").unwrap();
+        index.add_path(std::path::Path::new("file.txt")).unwrap();
+        let tree_id = index.write_tree().unwrap();
+        let tree = repo.find_tree(tree_id).unwrap();
+        repo.commit(Some("HEAD"), &signature, &signature, "main commit", &tree, &[])
+            .unwrap();
+        drop(tree);
+        std::fs::write(dir.path().join("file.txt"), "stashed\n").unwrap();
+        let stash_sha = repo.stash_save(&signature, "saved changes", None).unwrap().to_string();
+
+        let path = dir.path().to_str().unwrap();
+        let page = graph(path, None, 10).unwrap();
+        assert_eq!(page.commits.len(), 1);
+        assert_eq!(page.commits[0].summary, "main commit");
+
+        let refs = super::super::refs::list_refs(path).unwrap();
+        assert!(refs.stashes.iter().any(|stash| stash.sha == stash_sha));
     }
 }

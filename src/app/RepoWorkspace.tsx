@@ -4,15 +4,13 @@ import { RefsPanel } from "@/features/refs/RefsPanel";
 import { CommitGraph } from "@/features/git-graph/CommitGraph";
 import { DetailPanel } from "@/features/commit/DetailPanel";
 import { FileDiff } from "@/features/diff-viewer/DiffView";
-import { TerminalPanel } from "@/features/terminal/TerminalPanel";
 import { useSelection, useUiStore } from "@/stores/uiStore";
 import { fetchRepo, type RepoMeta } from "@/lib/ipc";
 import { useEffect } from "react";
 
 export function RepoWorkspace({ repo }: { repo: RepoMeta }) {
-  const { sha, file } = useSelection(repo.path);
+  const { sha, file, diffSource } = useSelection(repo.path);
   const selectFile = useUiStore((s) => s.selectFile);
-  const terminalVisible = useUiStore((s) => s.terminalVisible);
 
   // Persist panel sizes across relaunches.
   const layout = useDefaultLayout({ id: "gitpulse-workspace", storage: localStorage });
@@ -58,11 +56,18 @@ export function RepoWorkspace({ repo }: { repo: RepoMeta }) {
           </Panel>
           <Separator className="w-1 bg-border transition-colors hover:bg-accent" />
           <Panel id="center" defaultSize={56} minSize={30} className="flex min-h-0 flex-col overflow-hidden">
-            {file && sha ? (
+            {file && diffSource ? (
               <>
                 <div className="flex shrink-0 items-center gap-2 border-b border-border bg-bg-elevated px-3 py-1.5 text-sm">
                   <span className="truncate font-mono text-fg" title={file}>
                     {file}
+                  </span>
+                  <span className="shrink-0 text-xs text-fg-muted">
+                    {diffSource === "staged"
+                      ? "Staged diff"
+                      : diffSource === "worktree"
+                        ? "Working tree diff"
+                        : "Commit diff"}
                   </span>
                   <button
                     type="button"
@@ -74,7 +79,12 @@ export function RepoWorkspace({ repo }: { repo: RepoMeta }) {
                   </button>
                 </div>
                 <div className="min-h-0 flex-1 overflow-auto">
-                  <FileDiff repoPath={repo.path} sha={sha} file={file} />
+                  <FileDiff
+                    repoPath={repo.path}
+                    sha={sha}
+                    file={file}
+                    source={diffSource}
+                  />
                 </div>
               </>
             ) : (
@@ -87,15 +97,6 @@ export function RepoWorkspace({ repo }: { repo: RepoMeta }) {
           </Panel>
         </Group>
       </Panel>
-      
-      {terminalVisible && (
-        <>
-          <Separator className="h-1 bg-border transition-colors hover:bg-accent" />
-          <Panel id="terminal" defaultSize={30} minSize={10} className="min-h-0 overflow-hidden">
-            <TerminalPanel repoPath={repo.path} />
-          </Panel>
-        </>
-      )}
     </Group>
   );
 }

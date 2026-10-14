@@ -100,6 +100,63 @@ export interface RepoSummary {
   hasUpstream: boolean;
 }
 
+export interface GithubAuthStatus {
+  hasToken: boolean;
+  source: string;
+}
+
+export interface PrReviewEnvironment {
+  githubUser: string;
+  authSource: string;
+}
+
+export interface CopilotModelOption {
+  id: string;
+  name: string;
+  provider: string | null;
+  category: string | null;
+  priceCategory: string | null;
+  policyState: string | null;
+  warnings: string[];
+  dataRetentionWarning: string | null;
+  selectable: boolean;
+}
+
+export interface PullRequest {
+  repo: string;
+  number: number;
+  title: string;
+  url: string;
+  author: string;
+  authorType: string;
+  headSha: string;
+  createdAt: string;
+  updatedAt: string;
+  isDraft: boolean;
+  baseBranch: string;
+  headBranch: string;
+}
+
+export interface ReviewFinding {
+  severity: "critical" | "high" | "medium" | "low";
+  title: string;
+  body: string;
+  path: string | null;
+  line: number | null;
+}
+
+export interface PullRequestReview {
+  repo: string;
+  number: number;
+  headSha: string;
+  modelId: string;
+  event: "APPROVE" | "COMMENT";
+  reviewUrl: string;
+  summary: string;
+  findings: ReviewFinding[];
+  resolvedThreads: string[];
+}
+
 // --- Command wrappers -------------------------------------------------------
 
 export const openRepo = (path: string) =>
@@ -116,6 +173,9 @@ export const commitDetail = (path: string, sha: string) =>
 
 export const fileDiff = (path: string, sha: string, file: string) =>
   invoke<DiffPayload>("file_diff", { path, sha, file });
+
+export const workingFileDiff = (path: string, file: string, staged: boolean) =>
+  invoke<DiffPayload>("working_file_diff", { path, file, staged });
 
 export const repoStatus = (path: string) =>
   invoke<RepoStatus>("repo_status", { path });
@@ -140,3 +200,45 @@ export const fetchRepo = (path: string) =>
 
 export const pullRepo = (path: string, rebase: boolean) =>
   invoke<void>("pull_repo", { path, rebase });
+
+export const prReviewEnvironment = () =>
+  invoke<PrReviewEnvironment>("pr_review_environment");
+
+export const listCopilotModels = () =>
+  invoke<CopilotModelOption[]>("list_copilot_models");
+
+export const listPullRequests = (path: string) =>
+  invoke<PullRequest[]>("list_pull_requests", { path });
+
+export const resolvedReviewThreads = (path: string, repo: string, number: number) =>
+  invoke<string[]>("resolved_review_threads", { path, repo, number });
+
+export const reviewPullRequest = (
+  path: string,
+  number: number,
+  modelId: string,
+) =>
+  invoke<PullRequestReview>("review_pull_request", {
+    path,
+    number,
+    modelId,
+  });
+
+export const getGithubAuthStatus = () =>
+  invoke<GithubAuthStatus>("get_github_auth_status");
+
+export const saveGithubToken = (token: string) =>
+  invoke<void>("save_github_token", { token });
+
+export const clearGithubToken = () =>
+  invoke<void>("clear_github_token");
+
+export const copilotOpenLogin = () =>
+  invoke<void>("copilot_open_login");
+
+export const githubOpenLogin = () =>
+  invoke<string>("github_open_login");
+
+export const openSystemTerminal = (path: string) =>
+  invoke<void>("open_system_terminal", { path });
+

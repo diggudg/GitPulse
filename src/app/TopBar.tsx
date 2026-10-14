@@ -2,6 +2,7 @@ import { Sun, Moon, Contrast, Terminal as TerminalIcon } from "lucide-react";
 import { TabBar } from "./TabBar";
 import { useUiStore, HOME_TAB, type Theme } from "@/stores/uiStore";
 import { cn } from "@/lib/utils";
+import { openSystemTerminal } from "@/lib/ipc";
 import { SyncButton } from "@/features/sync/SyncButton";
 
 const THEMES: { id: Theme; icon: typeof Sun }[] = [
@@ -21,15 +22,14 @@ export function TopBar() {
         <div className="mb-1 flex items-center gap-2">
           <button
             type="button"
-            onClick={() => useUiStore.getState().toggleTerminal()}
-            className={cn(
-              "p-1.5 rounded-md border border-border bg-bg-elevated text-fg-muted hover:text-fg",
-              useUiStore.getState().terminalVisible && "text-accent border-accent"
-            )}
-            title="Toggle Terminal"
+            onClick={() => void openSystemTerminal(activeTabId).catch(console.error)}
+            className="p-1.5 rounded-md border border-border bg-bg-elevated text-fg-muted hover:text-fg"
+            title="Open in system terminal"
+            aria-label="Open repository in system terminal"
           >
             <TerminalIcon size={14} />
           </button>
+
           <SyncButton repoPath={activeTabId} />
         </div>
       )}

@@ -13,6 +13,8 @@ describe("assignLanes", () => {
     expect(laneCount).toBe(1);
     expect(rows.map((r) => r.nodeLane)).toEqual([0, 0, 0]);
     expect(rows[0].hasBottom).toBe(true);
+    expect(rows[0].hasTop).toBe(false);
+    expect(rows[1].hasTop).toBe(true);
     expect(rows[2].hasBottom).toBe(false); // root has no continuation
   });
 

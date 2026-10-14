@@ -6,7 +6,7 @@ import { useSelection, useUiStore } from "@/stores/uiStore";
 
 export function DetailPanel({ repoPath }: { repoPath: string }) {
   const selectFile = useUiStore((s) => s.selectFile);
-  const { sha: selectedSha, file: selectedFile } = useSelection(repoPath);
+  const { sha: selectedSha, file: selectedFile, diffSource } = useSelection(repoPath);
   const { detail, error } = useCommitDetail(repoPath, selectedSha);
 
   return (
@@ -46,7 +46,7 @@ export function DetailPanel({ repoPath }: { repoPath: string }) {
                       type="button"
                       onClick={() => selectFile(repoPath, f.path)}
                       className={`flex w-full items-center gap-2 rounded px-1.5 py-1 text-left text-sm hover:bg-bg-inset ${
-                        selectedFile === f.path ? "bg-bg-inset" : ""
+                        diffSource === "commit" && selectedFile === f.path ? "bg-bg-inset" : ""
                       }`}
                     >
                       <FileStatusBadge status={f.status} />

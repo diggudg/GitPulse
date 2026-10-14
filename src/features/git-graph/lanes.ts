@@ -44,6 +44,8 @@ export interface GraphRow {
   mergedFrom: LaneLine[];
   /** Lanes leaving the node downward for extra parents (diverging curves). */
   branchedTo: LaneLine[];
+  /** Whether the node has an incoming edge from a newer commit above it. */
+  hasTop: boolean;
   /** Whether the node's lane continues below (first parent); false for roots. */
   hasBottom: boolean;
 }
@@ -130,6 +132,7 @@ export function assignLanes(commits: Commit[]): GraphLayout {
       passLanes,
       mergedFrom,
       branchedTo,
+      hasTop: expecting.length > 0,
       hasBottom: bottom.has(nodeLane),
     });
   }

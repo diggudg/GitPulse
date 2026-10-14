@@ -6,6 +6,30 @@
   "permissions": [
     "core:default",
     "opener:default",
-    "dialog:default"
+    "dialog:default",
+    {
+      "identifier": "shell:allow-spawn",
+      "allow": [
+        { "name": "terminal-macos", "cmd": "/bin/zsh", "args": ["-i"] },
+        { "name": "terminal-linux", "cmd": "/bin/bash", "args": ["-i"] },
+        { "name": "terminal-windows", "cmd": "powershell.exe", "args": ["-NoLogo"] }
+      ]
+    },
+    {
+      "identifier": "shell:allow-stdin-write",
+      "allow": [
+        { "name": "terminal-macos", "cmd": "/bin/zsh", "args": ["-i"] },
+        { "name": "terminal-linux", "cmd": "/bin/bash", "args": ["-i"] },
+        { "name": "terminal-windows", "cmd": "powershell.exe", "args": ["-NoLogo"] }
+      ]
+    },
+    {
+      "identifier": "shell:allow-kill",
+      "allow": [
+        { "name": "terminal-macos", "cmd": "/bin/zsh", "args": ["-i"] },
+        { "name": "terminal-linux", "cmd": "/bin/bash", "args": ["-i"] },
+        { "name": "terminal-windows", "cmd": "powershell.exe", "args": ["-NoLogo"] }
+      ]
+    }
   ]
 }

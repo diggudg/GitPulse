@@ -33,6 +33,10 @@ impl GitService {
         diff::file_patch(&self.path, sha, file)
     }
 
+    pub fn working_file_patch(&self, file: &str, staged: bool) -> GitResult<String> {
+        diff::working_file_patch(&self.path, file, staged)
+    }
+
     pub fn status(&self) -> GitResult<status::RepoStatus> {
         status::status(&self.path)
     }

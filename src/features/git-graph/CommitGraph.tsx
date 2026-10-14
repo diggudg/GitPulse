@@ -9,6 +9,7 @@ import type { RepoMeta, RefLabel } from "@/lib/ipc";
 const ROW_H = 32;
 const LANE_W = 16;
 const NODE_R = 4.5;
+const GRAPH_TOP_PADDING = 8;
 
 export function CommitGraph({ repo }: { repo: RepoMeta }) {
   const refreshKey = useUiStore((s) => s.refreshKey);
@@ -41,7 +42,12 @@ export function CommitGraph({ repo }: { repo: RepoMeta }) {
 
   return (
     <div ref={parentRef} className="h-full overflow-auto">
-      <div style={{ height: virtualizer.getTotalSize(), position: "relative" }}>
+      <div
+        style={{
+          height: virtualizer.getTotalSize() + GRAPH_TOP_PADDING,
+          position: "relative",
+        }}
+      >
         {items.map((vi) => {
           const row = rows[vi.index];
           return (
@@ -52,7 +58,7 @@ export function CommitGraph({ repo }: { repo: RepoMeta }) {
               className={`absolute left-0 right-0 flex cursor-pointer items-center text-left text-sm ${
                 selectedSha === row.commit.sha ? "bg-bg-inset" : "hover:bg-bg-elevated"
               }`}
-              style={{ top: vi.start, height: ROW_H }}
+              style={{ top: vi.start + GRAPH_TOP_PADDING, height: ROW_H }}
               onClick={() => selectCommit(repo.path, row.commit.sha)}
             >
               <LaneCell row={row} width={graphWidth} />
@@ -77,8 +83,10 @@ function LaneCell({ row, width }: { row: GraphRow; width: number }) {
       {row.passLanes.map((l) => (
         <line key={`p${l.lane}`} x1={x(l.lane)} y1={0} x2={x(l.lane)} y2={ROW_H} stroke={l.color} strokeWidth={2} />
       ))}
-      {/* Node's lane to the top edge. */}
-      <line x1={nodeX} y1={0} x2={nodeX} y2={mid} stroke={row.color} strokeWidth={2} />
+      {/* Only connect from above when a newer commit leads into this node. */}
+      {row.hasTop && (
+        <line x1={nodeX} y1={0} x2={nodeX} y2={mid} stroke={row.color} strokeWidth={2} />
+      )}
       {/* Node's lane continuing below (first parent). */}
       {row.hasBottom && (
         <line x1={nodeX} y1={mid} x2={nodeX} y2={ROW_H} stroke={row.color} strokeWidth={2} />

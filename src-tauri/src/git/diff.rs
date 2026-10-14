@@ -91,19 +91,118 @@ pub fn file_patch(path: &str, sha: &str, file: &str) -> GitResult<String> {
     let repo = git2::Repository::open(path)?;
     let (_, diff) = commit_diff(&repo, sha)?;
 
+    patch_for_file(&diff, file)
+}
+
+/// Unified patch for one path against the index or working tree.
+pub fn working_file_patch(path: &str, file: &str, staged: bool) -> GitResult<String> {
+    let repo = git2::Repository::open(path)?;
+    let mut opts = git2::DiffOptions::new();
+    opts.pathspec(file).disable_pathspec_match(true);
+
+    let diff = if staged {
+        let head_tree = match repo.head() {
+            Ok(head) => Some(head.peel_to_tree()?),
+            Err(error) if error.code() == git2::ErrorCode::UnbornBranch => None,
+            Err(error) => return Err(error.into()),
+        };
+        repo.diff_tree_to_index(head_tree.as_ref(), None, Some(&mut opts))?
+    } else {
+        opts.include_untracked(true)
+            .show_untracked_content(true)
+            .recurse_untracked_dirs(true);
+        repo.diff_index_to_workdir(None, Some(&mut opts))?
+    };
+
+    patch_for_file(&diff, file)
+}
+
+fn patch_for_file(diff: &git2::Diff<'_>, file: &str) -> GitResult<String> {
     for (idx, delta) in diff.deltas().enumerate() {
-        let matches = delta
-            .new_file()
-            .path()
-            .map(|p| p.to_string_lossy() == file)
-            .unwrap_or(false);
+        let matches = [delta.old_file().path(), delta.new_file().path()]
+            .into_iter()
+            .flatten()
+            .any(|path| path.to_string_lossy() == file);
         if !matches {
             continue;
         }
-        if let Ok(Some(mut patch)) = git2::Patch::from_diff(&diff, idx) {
+        if let Some(mut patch) = git2::Patch::from_diff(diff, idx)? {
             let buf = patch.to_buf()?;
             return Ok(String::from_utf8_lossy(&buf).to_string());
         }
     }
     Ok(String::new())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::Path;
+
+    fn init_repo(dir: &Path) -> git2::Repository {
+        let repo = git2::Repository::init(dir).unwrap();
+        let signature = git2::Signature::now("Test", "test@example.com").unwrap();
+        std::fs::write(dir.join("tracked.txt"), "base\n").unwrap();
+        let mut index = repo.index().unwrap();
+        index.add_path(Path::new("tracked.txt")).unwrap();
+        let tree_id = index.write_tree().unwrap();
+        let tree = repo.find_tree(tree_id).unwrap();
+        repo.commit(Some("HEAD"), &signature, &signature, "initial", &tree, &[])
+            .unwrap();
+        drop(tree);
+        repo
+    }
+
+    #[test]
+    fn working_tree_patches_distinguish_index_and_worktree() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = init_repo(dir.path());
+        let path = dir.path().to_str().unwrap();
+
+        std::fs::write(dir.path().join("tracked.txt"), "staged\n").unwrap();
+        let mut index = repo.index().unwrap();
+        index.add_path(Path::new("tracked.txt")).unwrap();
+        index.write().unwrap();
+        std::fs::write(dir.path().join("tracked.txt"), "unstaged\n").unwrap();
+
+        let staged = working_file_patch(path, "tracked.txt", true).unwrap();
+        assert!(staged.contains("-base"));
+        assert!(staged.contains("+staged"));
+        assert!(!staged.contains("+unstaged"));
+
+        let unstaged = working_file_patch(path, "tracked.txt", false).unwrap();
+        assert!(unstaged.contains("-staged"));
+        assert!(unstaged.contains("+unstaged"));
+        assert!(!unstaged.contains("+base"));
+    }
+
+    #[test]
+    fn working_tree_patch_includes_untracked_file_content() {
+        let dir = tempfile::tempdir().unwrap();
+        let _repo = init_repo(dir.path());
+        let path = dir.path().to_str().unwrap();
+        let file = "new[1].txt";
+        std::fs::write(dir.path().join(file), "new content\n").unwrap();
+
+        let patch = working_file_patch(path, file, false).unwrap();
+        assert!(patch.contains(file));
+        assert!(patch.contains("+new content"));
+    }
+
+    #[test]
+    fn stash_commit_file_patch_is_available() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut repo = init_repo(dir.path());
+        let signature = git2::Signature::now("Test", "test@example.com").unwrap();
+        std::fs::write(dir.path().join("tracked.txt"), "stashed change\n").unwrap();
+        let sha = repo
+            .stash_save(&signature, "saved changes", None)
+            .unwrap()
+            .to_string();
+
+        let detail = detail(dir.path().to_str().unwrap(), &sha).unwrap();
+        assert_eq!(detail.files[0].path, "tracked.txt");
+        let patch = file_patch(dir.path().to_str().unwrap(), &sha, "tracked.txt").unwrap();
+        assert!(patch.contains("+stashed change"));
+    }
 }
