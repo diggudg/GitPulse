@@ -72,3 +72,18 @@ impl GitHubClient {
             .map_err(|e| GitError::Failed(format!("Failed to read PR diff body: {e}")))
     }
 }
+
+#[cfg(test)]
+mod live_tests {
+    use super::GitHubClient;
+
+    /// Live network smoke test; run with `cargo test --lib live_ -- --ignored --nocapture`.
+    #[tokio::test]
+    #[ignore]
+    async fn live_current_user() {
+        let client = GitHubClient::new().expect("client");
+        let login = client.current_user().await;
+        println!("current_user => {login:?}");
+        assert!(login.is_ok());
+    }
+}

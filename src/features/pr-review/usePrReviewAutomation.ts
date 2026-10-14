@@ -23,6 +23,13 @@ export function runPrReviewCycle(forceAllOpen = false): Promise<void> {
 }
 
 export function reviewErrorMessage(error: unknown): string {
+  const raw = rawErrorMessage(error);
+  return isTransientNetworkError(raw)
+    ? `GitHub is unreachable (offline, VPN switching, or waking from sleep). GitPulse will retry automatically. Details: ${raw}`
+    : raw;
+}
+
+function rawErrorMessage(error: unknown): string {
   if (error instanceof Error) return error.message;
   if (typeof error === "string") return error;
   if (
@@ -36,6 +43,28 @@ export function reviewErrorMessage(error: unknown): string {
   return JSON.stringify(error) ?? String(error);
 }
 
+// hyper/reqwest surface socket-level failures with these phrases; they're
+// transient and shouldn't be treated like auth or API failures.
+const TRANSIENT_NETWORK_PATTERN =
+  /client error \(Connect\)|error sending request|dns error|failed to lookup address|network is unreachable|connection (?:refused|reset)|timed out/i;
+
+export function isTransientNetworkError(message: string): boolean {
+  return TRANSIENT_NETWORK_PATTERN.test(message);
+}
+
+const NETWORK_RETRY_DELAY_MS = 5_000;
+
+async function withNetworkRetry<T>(operation: () => Promise<T>): Promise<T> {
+  try {
+    return await operation();
+  } catch (error) {
+    if (!isTransientNetworkError(rawErrorMessage(error))) throw error;
+    // After wake-from-sleep the interface often needs a few seconds before DNS/TLS work.
+    await new Promise((resolve) => setTimeout(resolve, NETWORK_RETRY_DELAY_MS));
+    return operation();
+  }
+}
+
 export function usePrReviewAutomation() {
   const mode = usePrReviewStore((state) => state.mode);
   const modeRevision = usePrReviewStore((state) => state.modeRevision);
@@ -45,9 +74,17 @@ export function usePrReviewAutomation() {
 
   useEffect(() => {
     if (mode === "off" || !selectedModelId) return;
-    void runPrReviewCycle();
-    const interval = setInterval(() => void runPrReviewCycle(), POLL_INTERVAL_MS);
-    return () => clearInterval(interval);
+    const runIfOnline = () => {
+      if (navigator.onLine) void runPrReviewCycle();
+    };
+    runIfOnline();
+    const interval = setInterval(runIfOnline, POLL_INTERVAL_MS);
+    // Catch up immediately when connectivity returns instead of waiting up to 30 minutes.
+    window.addEventListener("online", runIfOnline);
+    return () => {
+      clearInterval(interval);
+      window.removeEventListener("online", runIfOnline);
+    };
   }, [mode, modeRevision, selectedModelId, excludedRepos, repoPaths]);
 }
 
@@ -63,12 +100,12 @@ async function executeReviewCycle(forceAllOpen: boolean): Promise<void> {
   }
 
   try {
-    const [environment, availableModels] = await Promise.all([
-      prReviewEnvironment(),
-      listCopilotModels(),
-    ]);
+    const [environment, availableModels] = await withNetworkRetry(() =>
+      Promise.all([prReviewEnvironment(), listCopilotModels()]),
+    );
     usePrReviewStore.getState().setAvailableModels(availableModels);
     store.setEnvironment(environment);
+    store.setGlobalError(null);
     const selectedModel = availableModels.find((model) => model.id === selectedModelId);
     if (!selectedModel?.selectable) {
       store.setGlobalError(
@@ -200,7 +237,9 @@ async function executeReviewCycle(forceAllOpen: boolean): Promise<void> {
       }
     }
   } catch (error) {
-    usePrReviewStore.getState().setEnvironment(null);
+    if (!isTransientNetworkError(rawErrorMessage(error))) {
+      usePrReviewStore.getState().setEnvironment(null);
+    }
     const message = reviewErrorMessage(error);
     usePrReviewStore.getState().setGlobalError(message);
     usePrReviewStore.getState().recordDiagnostic(null, null, message);
